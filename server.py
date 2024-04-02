@@ -22,7 +22,26 @@ class ATM_Server:
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind((socket.gethostname(), port))
         self.server.listen(3)
+        self.load_keys()
         print(f"[LISTENING] is listening on {socket.gethostname()}:{port}")
+
+    def load_keys(self):
+        pub_alice = "./ancillary/alice/public_alice.pem"
+        pub_bob = "./ancillary/bob/public_bob.pem"
+        pub_charlie = "./ancillary/charlie/public_charlie.pem"
+        pub_server = "./ancillary/server/public_server.pem"
+        priv_server = "./ancillary/server/private_server.pem"
+
+        with open(pub_alice, "rb") as f:
+            self.alice_key = rsa.PublicKey.load_pkcs1(f.read())
+        with open(pub_bob, "rb") as f:
+            self.bob_key = rsa.PublicKey.load_pkcs1(f.read())
+        with open(pub_charlie, "rb") as f:
+            self.charlie_key = rsa.PublicKey.load_pkcs1(f.read())
+        with open(pub_server, "rb") as f:
+            self.server_pub_key = rsa.PublicKey.load_pkcs1(f.read())
+        with open(priv_server, "rb") as f:
+            self.priv_key = rsa.PrivateKey.load_pkcs1(f.read())
 
     def derive_keys(self, seed: str) -> tuple[bytes, Fernet]:
         """
@@ -111,6 +130,17 @@ class ATM_Server:
             print('Error')
             return False
 
+    def handle_first_message(self, data: bytes, conn: socket):
+        message = rsa.decrypt(data, self.priv_key)
+        time.sleep(1.5)
+        print(f'[RECEIVED MESSAGE] salt: {message.decode()}')
+        data = conn.recv(1024)
+        try:
+            rsa.verify(message, data, self.alice_key)
+            print('[VERIFCATION] message is verified')
+        except:
+            print('[VERICATION] message is not verified')
+
     def handle_client(self, conn, addr):
         """
         Function used to handle a client, each client is handled in its own thread 
@@ -127,9 +157,10 @@ class ATM_Server:
         self.clients[conn] = {}
 
         data = conn.recv(1024)
-        salt = data.decode('utf-8')
-        print(f'[RECEIVED] salt: {salt}')
-        self.derive_keys(salt)
+
+        if data:
+            self.handle_first_message(data, conn)
+
 
         while True:
             data = conn.recv(4096)
@@ -137,7 +168,6 @@ class ATM_Server:
                 data_json = json.loads(data.decode('utf-8'))
                 print(data_json)
             else:
-                print("[WAITING] to recieve")
                 time.sleep(0.5)
 
     def start_server(self):

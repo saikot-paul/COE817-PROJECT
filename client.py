@@ -1,8 +1,8 @@
 import base64
 import json
-import threading
 import rsa
 import socket
+import time
 from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -17,6 +17,42 @@ class ATM_Client:
     def __init__(self, host, port):
         self.connection = socket.create_connection((host, port))
         print(f"Connected to server at {host}:{port}")
+        self.load_keys()
+        self.first_message("unique_salt_for_session")
+
+    def first_message(self, seed: str):
+        """
+        Function used to establish the key distribution and derivation: 
+            1. Send the seed to the server 
+            2. Send the signature along with seed 
+            3. Start deriving the keys when you receive an acknowledgment 
+        
+        Params: 
+            - seed 
+                - string for deriving keys 
+        """
+        seed_bytes = seed.encode()
+
+        cipher_text = rsa.encrypt(seed_bytes, self.server_pub_key)
+        self.connection.send(cipher_text)
+        signature = rsa.sign(seed_bytes, self.priv_alice, hash_method='SHA-1')
+        time.sleep(1.5)
+        self.connection.send(signature)
+        self.derive_keys(seed)
+
+    def load_keys(self):
+        pub_alice = "./ancillary/alice/public_alice.pem"
+        priv_alice = "./ancillary/alice/private_alice.pem"
+        pub_server = "./ancillary/server/public_server.pem"
+
+        with open(pub_alice, "rb") as f:
+            self.alice_key = rsa.PublicKey.load_pkcs1(f.read())
+        with open(priv_alice, "rb") as f:
+            self.priv_alice = rsa.PrivateKey.load_pkcs1(f.read())
+        with open(pub_server, "rb") as f:
+            self.server_pub_key = rsa.PublicKey.load_pkcs1(f.read())
+
+
 
     def derive_keys(self, seed: str) -> tuple[bytes, Fernet]:
         """
@@ -56,7 +92,7 @@ class ATM_Client:
         message_data = {'cipher_text': encrypted_message.decode(
             'utf-8'), 'hmac': hmac}
         print(message_data)
-        self.connection.sendall(json.dumps(message_data).encode('utf-8'))
+        self.connection.send(json.dumps(message_data).encode('utf-8'))
 
     def close_connection(self):
         self.connection.close()
@@ -65,9 +101,7 @@ class ATM_Client:
 
 if __name__ == "__main__":
     client = ATM_Client(socket.gethostname(), 1234)
-    salt = b"unique_salt_for_session"
     salt_str = "unique_salt_for_session"
-    client.connection.sendall(salt)
     client.derive_keys(salt_str)
     client.send_message("Hello, Server!")
     client.close_connection()
