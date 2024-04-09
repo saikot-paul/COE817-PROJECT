@@ -145,10 +145,17 @@ class ATM_Server:
 
         return self.clients[conn]['written_key'].encrypt(msg_bytes)
 
-    def send_message(self, message: str, conn: socket):
+    def send_message(self, message: str, conn: socket, first=False):
         print('[SENDING MESSAGE]................................')
-        nonce = self.generate_nonce(conn)
-        message_data = " | ".join([message, nonce])
+
+        if first:
+            nonce = self.generate_nonce(conn)
+            message_data = " | ".join([message, nonce])
+        else:
+            prev_nonce = self.clients[conn]['received_nonces'][-1]
+            nonce = self.generate_nonce(conn)
+            message_data = " | ".join([message, prev_nonce, nonce])
+
         print(f'[SENDING PRE-CIPHER] {message_data}')
 
         cipher = self.encrypt_message(message_data=message_data, conn=conn)
@@ -175,18 +182,27 @@ class ATM_Server:
                 print(f'[VERIFIED] Message received has valid MAC')
             else:
                 print(f'[NOT VERIFIED] Message received does not have valid MAC')
+            if (message_data.split(" | ")[-1] not in self.clients[conn]['received_nonces']):
+                self.clients[conn]['received_nonces'].append(
+                    message_data.split()[-1])
+                print(f'[NONCE] Fresh')
+            # else:
+                # return
 
             action = message_data[0]
+            nonce = message_data.split(" | ")[-1]
             match action:
                 case "l":
                     print("[LOGIN ATTEMPT]..............................")
                     act, user, pword, *nonces = message_data.split(" | ")
-
+                    success = ""
                     if self.handle_login(username=user, password=pword, conn=conn):
-                        self.send_message("[LOGIN] | Successful", conn)
+                        success = "Successful"
                     else:
-                        self.send_message("[LOGIN] | Unsuccessful", conn)
+                        success = "unsuccessful"
 
+                    tmp = " | ".join(["[LOGIN]", success])
+                    self.send_message(tmp, conn)
                 case "r":
                     print("[REGISTRATION ATTEMPT]..............................")
                     act, user, pword, *nonces = message_data.split(" | ")
@@ -210,6 +226,7 @@ class ATM_Server:
                 case "b":
                     print("[BALANCE CHECK]..............................")
                     self.handle_check_balance(conn)
+
             message, *nonces = message_data.split(" | ")
             time.sleep(1.5)
 
@@ -234,7 +251,7 @@ class ATM_Server:
 
                 return True
 
-        tmp = f'{username} login failed,'
+        tmp = f'{username} login failed'
         logger.log(tmp)
         return False
 
@@ -254,10 +271,12 @@ class ATM_Server:
                     json.dump(data, j)
                     self.clients[conn]['username'] = username
                     self.clients[conn]['is_login'] = True
-                    self.send_message('[REGISTRATION] | Successful', conn)
+                    self.send_message(
+                        f'[REGISTRATION] | Successful', conn)
             else:
                 logger.log(f'{username} registration unsuccesful')
-                self.send_message('[REGISTRATION] | Unsuccessful', conn)
+                self.send_message(
+                    f'[REGISTRATION] | Unsuccessful', conn)
 
     def handle_deposit(self, deposit: float, conn: socket):
 
@@ -270,11 +289,11 @@ class ATM_Server:
                 with open('users.json', 'w') as j:
                     json.dump(data, j)
 
-                logger.log(f'{username} deposit successful')
-                self.send_message("[DEPOSIT] | Successful", conn)
+                logger.log(f'{username} deposit: {deposit} successful')
+                self.send_message(f"[DEPOSIT] | Successful", conn)
         else:
             logger.log(f'{username} deposit failure')
-            self.send_message("[DEPOSIT] | Unsuccessful", conn)
+            self.send_message(f"[DEPOSIT] | Unsuccessful", conn)
 
     def handle_withdrawal(self, withdrawal: float, conn: socket):
 
@@ -285,12 +304,14 @@ class ATM_Server:
                 username = self.clients[conn]['username']
 
                 if (data[username]['balance'] - withdrawal >= 0):
-                    self.send_message("[WITHDRAWAL] Successful", conn)
-                    logger.log(f'{username} withdrawal successful')
+                    self.send_message(
+                        f"[WITHDRAWAL] | Successful", conn)
+                    logger.log(f'{username} withdrawal: {
+                               withdrawal} successful')
                 else:
                     logger.log(f'{username} withdrawal failure')
                     self.send_message(
-                        "[WITHDRAWAL] Unsuccessful: Insufficient funds, brokie", conn)
+                        f"[WITHDRAWAL] | Unsuccessful: Insufficient funds, brokie", conn)
         else:
             self.send_message("[DEPOSIT] Unsuccessful", conn)
 
@@ -306,7 +327,7 @@ class ATM_Server:
                 self.send_message(f"[BALANCE] {balance}", conn)
 
         else:
-            self.send_message(f"[BALANCE] {balance}")
+            self.send_message(f"[BALANCE] | Unsuccessful")
 
         logger.log(f'{username} check balance')
 
@@ -324,7 +345,7 @@ class ATM_Server:
             print('[VERICATION] message is not verified')
 
         self.derive_keys(message, conn)
-        self.send_message("Done", conn)
+        self.send_message("Done", conn, first=True)
 
     def generate_nonce(self, conn):
 
@@ -346,7 +367,8 @@ class ATM_Server:
         print(f'[NEW CONNECTION] from {addr}')
         try:
             self.clients[conn] = {
-                'nonces': []
+                'nonces': [],
+                'received_nonces': []
             }
 
             data = conn.recv(1024)

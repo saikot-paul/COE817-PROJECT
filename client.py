@@ -15,6 +15,7 @@ class ATM_Client:
     def __init__(self, host, port):
         self.connection = socket.create_connection((host, port))
         self.sent_nonce = []
+        self.received_nonces = []
         print(f"[CONNECTED] to server at {host}:{port}")
 
     def first_message(self, seed: str):
@@ -110,8 +111,9 @@ class ATM_Client:
 
     def send_message(self, message: str):
         print('[SENDING MESSAGE]................................')
+        prev_nonce = self.received_nonces[-1]
         nonce = self.generate_nonce()
-        message_data = " | ".join([message, nonce])
+        message_data = " | ".join([message, prev_nonce, nonce])
         print(f'[SENDING PRE-CIPHER] {message_data}')
 
         cipher = self.encrypt_message(message=message_data)
@@ -131,6 +133,8 @@ class ATM_Client:
 
         action, *nonces = message.split(" | ")
 
+        latest_nonce = nonces[-1]
+
         print(f"[RECEIVED MESSAGE] {message}")
 
         if (self.verify_hmac(hmac_received, msg_bytes.decode())):
@@ -138,6 +142,9 @@ class ATM_Client:
         else:
             print(f'[NOT VERIFIED] Message received does not have valid MAC')
 
+        if (latest_nonce not in self.received_nonces):
+            print('[NONCE] Fresh')
+            self.received_nonces.append(latest_nonce)
         return action, message
 
     def run_atm(self):
@@ -162,10 +169,12 @@ class ATM_Client:
 
                 self.send_message(data)
                 first, message = self.receive_message()
-                print(message)
+                ack = message.split(" | ")[1]
 
-                if (message.split(" | ")[1] == "Successful"):
+                if (ack == "Successful"):
                     break
+
+            messages = message.split(" | ")
 
             while True:
                 print(
