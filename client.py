@@ -11,6 +11,20 @@ from cryptography.fernet import Fernet
 from random import randint
 
 
+def generate_key(seed: bytes = b'shared_password'):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=seed,
+        iterations=100,
+        backend=default_backend()
+    )
+    fernet_seed = base64.urlsafe_b64encode(
+        kdf.derive(seed))
+
+    return fernet_seed
+
+
 class ATM_Client:
     def __init__(self, host, port):
         self.connection = socket.create_connection((host, port))
@@ -18,6 +32,7 @@ class ATM_Client:
         self.received_nonces = []
         print(f"[CONNECTED] to server at {host}:{port}")
 
+    # MARK: First Message
     def first_message(self, seed: str):
         """
         Function used to establish the key distribution and derivation: 
@@ -31,13 +46,27 @@ class ATM_Client:
         """
         seed_bytes = seed.encode()
 
+        temp_key = generate_key()
+        encrypter = Fernet(temp_key)
+        cipher_text = encrypter.encrypt(seed_bytes)
+        hash_obj = hashlib.sha256(cipher_text)
+        hmac = hash_obj.hexdigest()
+
+        self.connection.send(cipher_text)
+        time.sleep(1.5)
+        self.connection.send(hmac.encode())
+        self.derive_keys(seed)
+
+        """
         cipher_text = rsa.encrypt(seed_bytes, self.server_pub_key)
         self.connection.send(cipher_text)
         signature = rsa.sign(seed_bytes, self.priv_alice, hash_method='SHA-1')
         time.sleep(1.5)
         self.connection.send(signature)
+        """
         self.derive_keys(seed)
 
+    # MARK: Load Keys
     def load_keys(self):
         pub_alice = "./ancillary/alice/public_alice.pem"
         priv_alice = "./ancillary/alice/private_alice.pem"
@@ -50,6 +79,7 @@ class ATM_Client:
         with open(pub_server, "rb") as f:
             self.server_pub_key = rsa.PublicKey.load_pkcs1(f.read())
 
+    # MARK: Derive Keys
     def derive_keys(self, seed: str) -> tuple[bytes, Fernet]:
         """
         This is a function that uses key derivation function to create a keys: 
@@ -79,6 +109,7 @@ class ATM_Client:
 
         print('[DJ KHALED] I GOT THE KEYS')
 
+    # MARK: Generate HMAC
     def generate_hmac(self, message: str) -> str:
 
         new_message = message + self.secret_key
@@ -89,6 +120,7 @@ class ATM_Client:
 
         return hex_dig
 
+    # MARK: Verify HMAC
     def verify_hmac(self, hmac_received: str, message: str) -> bool:
 
         print(f'[HMAC RECEIVED] {hmac_received}')
@@ -100,30 +132,39 @@ class ATM_Client:
 
         return hmac_received == hex_dig
 
+    # MARK: Generate Nonce
     def generate_nonce(self) -> str:
         pin = "".join(str(randint(0, 9)) for _ in range(6))
         self.sent_nonce.append(pin)
         return pin
 
+    # MARK: Encrypt Message
     def encrypt_message(self, message: str) -> bytes:
         msg_bytes = message.encode()
         return self.written_key.encrypt(msg_bytes)
 
-    def send_message(self, message: str):
+    # MARK: Send Message
+    def send_message(self, message: str, first=False):
         print('[SENDING MESSAGE]................................')
         prev_nonce = self.received_nonces[-1]
         nonce = self.generate_nonce()
-        message_data = " | ".join([message, prev_nonce, nonce])
-        print(f'[SENDING PRE-CIPHER] {message_data}')
+
+        if first:
+            message_data = " | ".join([message, nonce])
+        else:
+            message_data = " | ".join([message, prev_nonce, nonce])
+            print(f'[SENDING PRE-CIPHER] {message_data}')
 
         cipher = self.encrypt_message(message=message_data)
         print(f'[SENDING POST-CIPHER] {cipher}')
+
         hmac = self.generate_hmac(cipher.decode()).encode()
 
         self.connection.send(cipher)
         time.sleep(1.5)
         self.connection.send(hmac)
 
+    # MARK: Receive Message
     def receive_message(self):
 
         print(f'[INCOMING MESSAGE]............................')
@@ -147,6 +188,7 @@ class ATM_Client:
             self.received_nonces.append(latest_nonce)
         return action, message
 
+    # MARK: Run ATM
     def run_atm(self):
 
         self.load_keys()
@@ -218,8 +260,7 @@ class ATM_Client:
                     self.receive_message()
                     time.sleep(1)
 
-
-
+    # MARK: Close Connection
     def close_connection(self):
         self.connection.close()
         print("[CONNECTION] closed.")

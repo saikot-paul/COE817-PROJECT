@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet
 from datetime import datetime
 from random import randint
 
-
+# MARK: Encrypted Logger
 class EncryptedLogger:
 
     def __init__(self, key, filepath):
@@ -26,7 +26,7 @@ class EncryptedLogger:
         with open(self.filepath, "ab") as file:
             file.write(encrypted_message + b'\n')
 
-
+# MARK: Generate Key
 def generate_key(passphrase: bytes, seed: bytes):
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -48,9 +48,10 @@ key = generate_key(passphrase, salt)
 filepath = "secure_log.log"
 logger = EncryptedLogger(key, filepath)
 
-
+# MARK: ATM Class
 class ATM_Server:
 
+    # MARK: init function
     def __init__(self, port=1234):
         self.og_shared_key = b'previousharedkey'
         self.clients = {}
@@ -60,6 +61,7 @@ class ATM_Server:
         self.load_keys()
         print(f"[LISTENING] on {socket.gethostname()}:{port}")
 
+    # MARK: Load Keys
     def load_keys(self):
 
         pub_alice = "./ancillary/alice/public_alice.pem"
@@ -79,6 +81,7 @@ class ATM_Server:
         with open(priv_server, "rb") as f:
             self.priv_key = rsa.PrivateKey.load_pkcs1(f.read())
 
+    # MARK: Derive Keys
     def derive_keys(self, seed: bytes, conn: socket) -> tuple[bytes, Fernet]:
         """
         This is a function that uses key derivation function to create a keys: 
@@ -108,6 +111,7 @@ class ATM_Server:
 
         print(f'[DJ KHALED] I GOT THE KEYS')
 
+    # Mark: Generate HMAC
     def generate_hmac(self, message: str, conn) -> str:
 
         new_message = message + self.clients[conn]['secret_key']
@@ -118,6 +122,7 @@ class ATM_Server:
 
         return hex_dig
 
+    # Mark: Verify HMAC
     def verify_hmac(self, hmac_received: str, message: str, conn) -> bool:
 
         print(f'[HMAC RECEIVED] {hmac_received}')
@@ -129,6 +134,7 @@ class ATM_Server:
 
         return hmac_received == hex_dig
 
+    # Mark: Encrypt Message
     def encrypt_message(self, message_data: dict, conn) -> bytes:
         """
         Function that is used to encrypt a given message, 
@@ -145,6 +151,7 @@ class ATM_Server:
 
         return self.clients[conn]['written_key'].encrypt(msg_bytes)
 
+    # Mark: Send Message
     def send_message(self, message: str, conn: socket, first=False):
         print('[SENDING MESSAGE]................................')
 
@@ -166,6 +173,7 @@ class ATM_Server:
         time.sleep(1.5)
         conn.send(hmac)
 
+    # MARK: Receive Message
     def receive_message(self, conn):
 
         msg_bytes = conn.recv(4096)
@@ -235,6 +243,7 @@ class ATM_Server:
         else:
             time.sleep(0.05)
 
+    # MARK: Handle Login
     def handle_login(self, username: str, password: str, conn: socket):
 
         tmp = f'{username} attempted login '
@@ -255,6 +264,7 @@ class ATM_Server:
         logger.log(tmp)
         return False
 
+    # MARK: Handle Register
     def handle_register(self, username: str, password: str, conn: socket):
 
         with open('users.json', 'r') as f:
@@ -278,6 +288,7 @@ class ATM_Server:
                 self.send_message(
                     f'[REGISTRATION] | Unsuccessful', conn)
 
+    # MARK: Handle Deposit
     def handle_deposit(self, deposit: float, conn: socket):
 
         if (self.clients[conn]['is_login']):
@@ -295,6 +306,7 @@ class ATM_Server:
             logger.log(f'{username} deposit failure')
             self.send_message(f"[DEPOSIT] | Unsuccessful", conn)
 
+    # MARK: Handle Withdrawal
     def handle_withdrawal(self, withdrawal: float, conn: socket):
 
         if (self.clients[conn]['is_login']):
@@ -304,6 +316,11 @@ class ATM_Server:
                 username = self.clients[conn]['username']
 
                 if (data[username]['balance'] - withdrawal >= 0):
+                    data[username]['balance'] -= withdrawal
+
+                    with open('users.json', 'w') as j:
+                        json.dump(data, j)
+
                     self.send_message(
                         f"[WITHDRAWAL] | Successful", conn)
                     logger.log(f'{username} withdrawal: {
@@ -315,6 +332,7 @@ class ATM_Server:
         else:
             self.send_message("[DEPOSIT] Unsuccessful", conn)
 
+    # MARK: Handle Balance
     def handle_check_balance(self, conn: socket):
 
         if (self.clients[conn]['is_login']):
@@ -331,9 +349,39 @@ class ATM_Server:
 
         logger.log(f'{username} check balance')
 
-
+    # MARK: Handle First Message
     def handle_first_message(self, data: bytes, conn: socket):
 
+        og_key = b'shared_password'
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=og_key,
+            iterations=100,
+            backend=default_backend()
+        )
+
+        fernet_seed = base64.urlsafe_b64encode(
+            kdf.derive(og_key))
+
+        tmp_key = Fernet(fernet_seed)
+        message_bytes = tmp_key.decrypt(data)
+        message = message_bytes.decode()
+        print(f'[FIRST] MESSAGE: {message}')
+        hmac_bytes = conn.recv(4096)
+        hmac = hmac_bytes.decode()
+
+        cipher_text = tmp_key.encrypt(message_bytes)
+
+        hash_obj = hashlib.sha256(cipher_text)
+        hex_dig = hash_obj.hexdigest()
+        if (hex_dig == hmac):
+            print('[FIRST MESSAGE] HMAC VERIFIED')
+
+        self.derive_keys(data, conn)
+
+        """
         message = rsa.decrypt(data, self.priv_key)
         time.sleep(1.5)
         print(f'[RECEIVED MESSAGE] salt: {message.decode()}')
@@ -343,8 +391,9 @@ class ATM_Server:
             print('[VERIFCATION] message is verified')
         except:
             print('[VERICATION] message is not verified')
+        """
 
-        self.derive_keys(message, conn)
+        self.derive_keys(message_bytes, conn)
         self.send_message("Done", conn, first=True)
 
     def generate_nonce(self, conn):
