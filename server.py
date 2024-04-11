@@ -129,6 +129,8 @@ class ATM_Server:
     # MARK: HANDLE SEND MESSAGE
     def handle_send_message(self, message: str, conn: socket.socket, first=False) -> None:
 
+        print(
+            f'[SENDING MESSAGE].......................................................')
         if first:
             new_nonce = self.generate_nonce(conn)
             string = " | ".join([message, new_nonce])
@@ -137,6 +139,7 @@ class ATM_Server:
             new_nonce = self.generate_nonce(conn)
             string = " | ".join([message, prev_nonce, new_nonce])
 
+        print(f'[SENDING MESSAGE] {string}')
         cipher_text = self.clients[conn]['written_key'].encrypt(
             string.encode())
         secret_key = self.clients[conn]['secret_key']
@@ -148,7 +151,6 @@ class ATM_Server:
         conn.send(hmac)
 
     # MARK: GENERATE NONCE
-
     def generate_nonce(self, conn):
 
         pin = "".join(str(randint(0, 9)) for _ in range(6))

@@ -78,7 +78,6 @@ class ATM_Client:
                     print("Invalid action.")
                     continue
 
-            print(value == None)
             if value is not None:
                 data = " | ".join([str(action), str(value)])
                 self.send_message(data)
