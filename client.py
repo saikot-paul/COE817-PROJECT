@@ -1,272 +1,191 @@
-import base64
-import hashlib
-import rsa
 import socket
 import time
-from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.fernet import Fernet
+from utils import generate_key, generate_hmac, verify_hmac
 from random import randint
 
-
-def generate_key(seed: bytes = b'shared_password'):
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=seed,
-        iterations=100,
-        backend=default_backend()
-    )
-    fernet_seed = base64.urlsafe_b64encode(
-        kdf.derive(seed))
-
-    return fernet_seed
+# MARK: CLASS DELCARATION
 
 
 class ATM_Client:
-    def __init__(self, host, port):
-        self.connection = socket.create_connection((host, port))
-        self.sent_nonce = []
+
+    # MARK: CLASS INIT
+    def __init__(self, host, port=1234):
+
+        self.conn = socket.create_connection((host, port))
+        self.sent_nonces = []
         self.received_nonces = []
-        print(f"[CONNECTED] to server at {host}:{port}")
+        print('[CONNECTION] CLIENT IS CONNECTED')
+        print('[CONNECTION] CLIENT IS LISTENING TO SERVER')
 
-    # MARK: First Message
-    def first_message(self, seed: str):
-        """
-        Function used to establish the key distribution and derivation: 
-            1. Send the seed to the server 
-            2. Send the signature along with seed 
-            3. Start deriving the keys when you receive an acknowledgment 
-        
-        Params: 
-            - seed 
-                - string for deriving keys 
-        """
-        seed_bytes = seed.encode()
-
-        temp_key = generate_key()
-        encrypter = Fernet(temp_key)
-        cipher_text = encrypter.encrypt(seed_bytes)
-        hash_obj = hashlib.sha256(cipher_text)
-        hmac = hash_obj.hexdigest()
-
-        self.connection.send(cipher_text)
-        time.sleep(1.5)
-        self.connection.send(hmac.encode())
-        self.derive_keys(seed)
-
-        """
-        cipher_text = rsa.encrypt(seed_bytes, self.server_pub_key)
-        self.connection.send(cipher_text)
-        signature = rsa.sign(seed_bytes, self.priv_alice, hash_method='SHA-1')
-        time.sleep(1.5)
-        self.connection.send(signature)
-        """
-        self.derive_keys(seed)
-
-    # MARK: Load Keys
-    def load_keys(self):
-        pub_alice = "./ancillary/alice/public_alice.pem"
-        priv_alice = "./ancillary/alice/private_alice.pem"
-        pub_server = "./ancillary/server/public_server.pem"
-
-        with open(pub_alice, "rb") as f:
-            self.alice_key = rsa.PublicKey.load_pkcs1(f.read())
-        with open(priv_alice, "rb") as f:
-            self.priv_alice = rsa.PrivateKey.load_pkcs1(f.read())
-        with open(pub_server, "rb") as f:
-            self.server_pub_key = rsa.PublicKey.load_pkcs1(f.read())
-
-    # MARK: Derive Keys
-    def derive_keys(self, seed: str) -> tuple[bytes, Fernet]:
-        """
-        This is a function that uses key derivation function to create a keys: 
-        
-        Params: 
-            - seed 
-                - Used for the derivation from a shared key 
-        Returns: 
-            - secret_key 
-                - This is used to hash the message and generate an hmac 
-            - write_key
-                - This is used to encrypt the messages
-        """
-        self.secret_key = seed
-
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=seed.encode('utf-8'),
-            iterations=100,
-            backend=default_backend()
-        )
-
-        fernet_seed = base64.urlsafe_b64encode(
-            kdf.derive(seed.encode('utf-8')))
-        self.written_key = Fernet(fernet_seed)
-
-        print('[DJ KHALED] I GOT THE KEYS')
-
-    # MARK: Generate HMAC
-    def generate_hmac(self, message: str) -> str:
-
-        new_message = message + self.secret_key
-        print(f'[HMAC CREATION] {new_message}')
-        hash_obj = hashlib.sha256(new_message.encode())
-        hex_dig = hash_obj.hexdigest()
-        print(f'[GENERATED HMAC] {hex_dig}')
-
-        return hex_dig
-
-    # MARK: Verify HMAC
-    def verify_hmac(self, hmac_received: str, message: str) -> bool:
-
-        print(f'[HMAC RECEIVED] {hmac_received}')
-        new_message = message + self.secret_key
-        print(f'[HMAC PRE HASH] {new_message}')
-        hash_obj = hashlib.sha256(new_message.encode())
-        hex_dig = hash_obj.hexdigest()
-        print(f'[HMAC CREATED] {hex_dig}')
-
-        return hmac_received == hex_dig
-
-    # MARK: Generate Nonce
-    def generate_nonce(self) -> str:
-        pin = "".join(str(randint(0, 9)) for _ in range(6))
-        self.sent_nonce.append(pin)
-        return pin
-
-    # MARK: Encrypt Message
-    def encrypt_message(self, message: str) -> bytes:
-        msg_bytes = message.encode()
-        return self.written_key.encrypt(msg_bytes)
-
-    # MARK: Send Message
-    def send_message(self, message: str, first=False):
-        print('[SENDING MESSAGE]................................')
-        prev_nonce = self.received_nonces[-1]
-        nonce = self.generate_nonce()
-
-        if first:
-            message_data = " | ".join([message, nonce])
-        else:
-            message_data = " | ".join([message, prev_nonce, nonce])
-            print(f'[SENDING PRE-CIPHER] {message_data}')
-
-        cipher = self.encrypt_message(message=message_data)
-        print(f'[SENDING POST-CIPHER] {cipher}')
-
-        hmac = self.generate_hmac(cipher.decode()).encode()
-
-        self.connection.send(cipher)
-        time.sleep(1.5)
-        self.connection.send(hmac)
-
-    # MARK: Receive Message
-    def receive_message(self):
-
-        print(f'[INCOMING MESSAGE]............................')
-        msg_bytes = self.connection.recv(4096)
-        hmac_received = self.connection.recv(4096).decode()
-        message = self.written_key.decrypt(msg_bytes).decode()
-
-        action, *nonces = message.split(" | ")
-
-        latest_nonce = nonces[-1]
-
-        print(f"[RECEIVED MESSAGE] {message}")
-
-        if (self.verify_hmac(hmac_received, msg_bytes.decode())):
-            print(f'[VERIFIED] Message received has valid HMAC')
-        else:
-            print(f'[NOT VERIFIED] Message received does not have valid MAC')
-
-        if (latest_nonce not in self.received_nonces):
-            print('[NONCE] Fresh')
-            self.received_nonces.append(latest_nonce)
-        return action, message
-
-    # MARK: Run ATM
+    # MARK: RUN ATM
     def run_atm(self):
 
-        self.load_keys()
-        self.first_message(self.generate_nonce())
-        first, message = self.receive_message()
-        if (first == "Done"):
+        self.handle_first_message()
 
-            while True:
-                register = input("Are you registered (Y/N): ")
+        registered = False
+        while True:
 
-                if (register.lower() == 'n'):
-                    print('Please create an account')
-                    user_name = input("Enter a username: ")
-                    password = input("Enter a password: ")
-                    data = " | ".join(['r', user_name, password])
-                else:
-                    user_name = input("Enter a username: ")
-                    password = input("Enter a password: ")
-                    data = " | ".join(['l', user_name, password])
+            ip = input("Do you have an account (Y/N)?: ")
 
-                self.send_message(data)
-                first, message = self.receive_message()
-                ack = message.split(" | ")[1]
+            if (ip.lower() == 'n'):
+                print('Please create an account')
+                user_name = input("Enter a username: ")
+                password = input("Enter a password: ")
+                data = " | ".join(['r', user_name, password])
+            else:
+                user_name = input("Enter a username: ")
+                password = input("Enter a password: ")
+                data = " | ".join(['l', user_name, password])
 
-                if (ack == "Successful"):
-                    break
+            self.send_message(data)
+            message_arr = self.receive_message()
 
-            messages = message.split(" | ")
+            if message_arr[1] == "Successful":
+                break
 
-            while True:
-                print(
-                    "Please enter an action: d - deposit, w - withdrawal, b - balance, e - exit")
-                action = input("Action: ")
+        while True:
+            print(
+                "Please enter an action: d - deposit, w - withdrawal, b - balance, e - exit")
+            action = input("Action: ")
 
-                action = action.lower()
-                value = None  # Initialize value
+            action = action.lower()
+            value = None  # Initialize value
 
-                match action:
-                    case "d":
-                        value = float(
-                            input("Enter the value you wish to deposit: "))
-                        if value <= 0:
-                            print("Cannot deposit amount specified")
-                            continue
-
-                    case "w":
-                        value = float(
-                            input("Enter the value you wish to withdraw: "))
-                        if value <= 0:
-                            print("Cannot withdraw amount specified")
-                            continue
-
-                    case "b":
-                        value = "balance"
-
-                    case "e":
-                        print("Thank you for your service!")
-                        break
-
-                    case _:
-                        print("Invalid action.")
+            match action:
+                case "d":
+                    value = float(
+                        input("Enter the value you wish to deposit: "))
+                    if value <= 0:
+                        print("Cannot deposit amount specified")
                         continue
 
-                print(value == None)
-                if value is not None:
-                    data = " | ".join([str(action), str(value)])
-                    self.send_message(data)
-                    time.sleep(1)
-                    self.receive_message()
-                    time.sleep(1)
+                case "w":
+                    value = float(
+                        input("Enter the value you wish to withdraw: "))
+                    if value <= 0:
+                        print("Cannot withdraw amount specified")
+                        continue
 
-    # MARK: Close Connection
+                case "b":
+                    value = "balance"
+
+                case "e":
+                    value = "e"
+                    print("Thank you for your service!")
+
+                case _:
+                    print("Invalid action.")
+                    continue
+
+            print(value == None)
+            if value is not None:
+                data = " | ".join([str(action), str(value)])
+                self.send_message(data)
+
+                if action == "e":
+                    break
+
+                time.sleep(1)
+                self.receive_message()
+                time.sleep(1)
+
+    # MARK: SEND MESSAGE
+
+    def send_message(self, message: str):
+
+        print('[SENDING MESSAGE]......................................')
+
+        prev_nonce = self.received_nonces[-1]
+        new_nonce = self.generate_nonce()
+        string = " | ".join([message, prev_nonce, new_nonce])
+        cipher_text = self.written_key.encrypt(string.encode())
+
+        print(f'[SENT MESSAGE] {string}')
+
+        hmac = generate_hmac(string, self.secret_key)
+
+        self.conn.send(cipher_text)
+        time.sleep(1.5)
+        self.conn.send(hmac)
+
+    # MARK: RECEIVE MESSAGE
+    def receive_message(self):
+
+        print('[INCOMING MESSAGE].........................................')
+        cipher_text = self.conn.recv(4096)
+
+        while not cipher_text:
+            cipher_text = self.conn.recv(4096)
+            time.sleep(0.5)
+
+        hmac_received = self.conn.recv(4096)
+
+        message_bytes = self.written_key.decrypt(cipher_text)
+        message_str = message_bytes.decode()
+        print(f'[RECEIVED MESSAGE] {message_str}')
+        message_arr = message_str.split(" | ")
+
+        if verify_hmac(hmac_received, message_bytes, self.secret_key):
+            print('[HMAC VERIFICATION] Message is VALID')
+        else:
+            print('[HMAC VERIFICATION] Message is NOT VALID')
+            return True
+
+        if (message_arr[-1] not in self.received_nonces):
+            self.received_nonces.append(message_arr[-1])
+            print(f'[NONCE] Fresh')
+
+        return message_arr
+
+    # MARK: HANDLE FIRST MESSAGE
+
+    def handle_first_message(self):
+
+        print('[FUNCTION CALL] HANDLE FIRST MESSAGE')
+        shared_key = 'sharedkey'.encode()
+        prev_key = generate_key(passphrase=shared_key, salt=shared_key)
+        shared_key = Fernet(prev_key)
+
+        seed = self.generate_nonce(first=True).encode()
+        cipher_text = shared_key.encrypt(seed)
+        hmac_msg = generate_hmac(seed, prev_key)
+        print(f'[CIPHER TEXT] GENERATED: {cipher_text}')
+
+        self.conn.send(cipher_text)
+        time.sleep(1.5)
+        self.conn.send(hmac_msg)
+
+        rev_seed = seed[::-1]
+        secret_key = generate_key(passphrase=seed, salt=seed)
+        written_key = generate_key(passphrase=rev_seed, salt=rev_seed)
+        self.secret_key = secret_key
+        self.written_key = Fernet(written_key)
+        self.receive_message()
+        self.send_message("ACK")
+
+    # MARK: GENERATE NONCE
+
+    def generate_nonce(self, first=False) -> str:
+        """
+        Function to generate nonces, for ensuring the freshness of each message 
+        """
+        pin = "".join(str(randint(0, 9)) for _ in range(6))
+
+        if not first:
+            self.sent_nonces.append(pin)
+        return pin
+
+    # MARK: CLOSE CONNECTION
     def close_connection(self):
-        self.connection.close()
+        """
+        Function that closes the connection with the server
+        """
+        print('[FUNCTION CALL] CLOSE CONNECTION')
+        self.conn.close()
         print("[CONNECTION] closed.")
 
 
-if __name__ == "__main__":
-    client = ATM_Client(socket.gethostname(), 1234)
-    client.run_atm()
-    client.close_connection()
+client = ATM_Client(host=socket.gethostname())
+client.run_atm()
+client.close_connection()

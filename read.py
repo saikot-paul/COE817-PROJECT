@@ -1,22 +1,6 @@
-from cryptography.fernet import Fernet
-import base64
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
-
-
-def generate_key(passphrase: bytes, seed: bytes):
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=seed,
-        iterations=100,
-        backend=default_backend()
-    )
-    fernet_seed = base64.urlsafe_b64encode(
-        kdf.derive(passphrase))
-
-    return fernet_seed
+from cryptography.fernet import Fernet
+from utils import generate_key
 
 
 class EncryptedLogReader:
@@ -36,11 +20,8 @@ class EncryptedLogReader:
             print(f"Failed to read or decrypt log: {e}")
 
 
-# Setup for using the logger and reader
-passphrase = b'phrase'
-salt = b'password'
-key = generate_key(passphrase, salt)
-filepath = "secure_log.log"
-
-reader = EncryptedLogReader(key, filepath)
-reader.read_logs()
+passphrase = b'password'
+salt = b'salt'
+log_key = generate_key(passphrase=passphrase, salt=salt)
+logger = EncryptedLogReader(log_key, 'audit.log')
+logger.read_logs()

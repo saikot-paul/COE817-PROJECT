@@ -1,438 +1,33 @@
-import base64
-import hashlib
 import json
-import rsa
 import socket
 import time
 import threading
-from cryptography.hazmat.backends import default_backend
+import traceback
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.fernet import Fernet
-from datetime import datetime
 from random import randint
-
-# MARK: Encrypted Logger
-class EncryptedLogger:
-
-    def __init__(self, key, filepath):
-        self.fernet = Fernet(key)
-        self.filepath = filepath
-
-    def log(self, message):
-        message = message + ' , ' + str(datetime.now())
-        encrypted_message = self.fernet.encrypt(message.encode())
-        with open(self.filepath, "ab") as file:
-            file.write(encrypted_message + b'\n')
-
-# MARK: Generate Key
-def generate_key(passphrase: bytes, seed: bytes):
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=seed,
-        iterations=100,
-        backend=default_backend()
-    )
-    fernet_seed = base64.urlsafe_b64encode(
-        kdf.derive(passphrase))
-
-    return fernet_seed
+from utils import EncryptedLogger, generate_key, generate_hmac, verify_hmac
 
 
-passphrase = b'phrase'
-salt = b'password'
+# MARK: INITIAL CONFIG
+passphrase = b'password'
+salt = b'salt'
+log_key = generate_key(passphrase=passphrase, salt=salt)
+logger = EncryptedLogger(log_key, 'audit.log')
 
-key = generate_key(passphrase, salt)
-filepath = "secure_log.log"
-logger = EncryptedLogger(key, filepath)
 
-# MARK: ATM Class
+# MARK: CLASS DECLARATION
 class ATM_Server:
 
-    # MARK: init function
+    # MARK: CLASS INIT
     def __init__(self, port=1234):
-        self.og_shared_key = b'previousharedkey'
         self.clients = {}
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind((socket.gethostname(), port))
         self.server.listen(3)
-        self.load_keys()
         print(f"[LISTENING] on {socket.gethostname()}:{port}")
 
-    # MARK: Load Keys
-    def load_keys(self):
-
-        pub_alice = "./ancillary/alice/public_alice.pem"
-        pub_bob = "./ancillary/bob/public_bob.pem"
-        pub_charlie = "./ancillary/charlie/public_charlie.pem"
-        pub_server = "./ancillary/server/public_server.pem"
-        priv_server = "./ancillary/server/private_server.pem"
-
-        with open(pub_alice, "rb") as f:
-            self.alice_key = rsa.PublicKey.load_pkcs1(f.read())
-        with open(pub_bob, "rb") as f:
-            self.bob_key = rsa.PublicKey.load_pkcs1(f.read())
-        with open(pub_charlie, "rb") as f:
-            self.charlie_key = rsa.PublicKey.load_pkcs1(f.read())
-        with open(pub_server, "rb") as f:
-            self.server_pub_key = rsa.PublicKey.load_pkcs1(f.read())
-        with open(priv_server, "rb") as f:
-            self.priv_key = rsa.PrivateKey.load_pkcs1(f.read())
-
-    # MARK: Derive Keys
-    def derive_keys(self, seed: bytes, conn: socket) -> tuple[bytes, Fernet]:
-        """
-        This is a function that uses key derivation function to create a keys: 
-        
-        Params: 
-            - seed 
-                - Used for the derivation from a shared key 
-        Returns: 
-            - secret_key 
-                - This is used to hash the message and generate an hmac 
-            - write_key
-                - This is used to encrypt the messages
-        """
-        self.clients[conn]['secret_key'] = seed.decode()
-
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=seed,
-            iterations=100,
-            backend=default_backend()
-        )
-
-        fernet_seed = base64.urlsafe_b64encode(
-            kdf.derive(seed))
-        self.clients[conn]['written_key'] = Fernet(fernet_seed)
-
-        print(f'[DJ KHALED] I GOT THE KEYS')
-
-    # Mark: Generate HMAC
-    def generate_hmac(self, message: str, conn) -> str:
-
-        new_message = message + self.clients[conn]['secret_key']
-        print(f'[HMAC PRE HASH] {new_message}')
-        hash_obj = hashlib.sha256(new_message.encode())
-        hex_dig = hash_obj.hexdigest()
-        print(f'[HMAC POST HASH] {hex_dig}')
-
-        return hex_dig
-
-    # Mark: Verify HMAC
-    def verify_hmac(self, hmac_received: str, message: str, conn) -> bool:
-
-        print(f'[HMAC RECEIVED] {hmac_received}')
-        new_message = message + self.clients[conn]['secret_key']
-        print(f'[HMAC PRE HASH] {new_message}')
-        hash_obj = hashlib.sha256(new_message.encode())
-        hex_dig = hash_obj.hexdigest()
-        print(f'[HMAC CREATED] {hex_dig}')
-
-        return hmac_received == hex_dig
-
-    # Mark: Encrypt Message
-    def encrypt_message(self, message_data: dict, conn) -> bytes:
-        """
-        Function that is used to encrypt a given message, 
-
-        Params: 
-            - message_data
-                - Data to be encrypted
-        
-        Returns: 
-            - msg_bytes: 
-                - Encrypt the string using Fernet symmetric encryption
-        """
-        msg_bytes = message_data.encode()
-
-        return self.clients[conn]['written_key'].encrypt(msg_bytes)
-
-    # Mark: Send Message
-    def send_message(self, message: str, conn: socket, first=False):
-        print('[SENDING MESSAGE]................................')
-
-        if first:
-            nonce = self.generate_nonce(conn)
-            message_data = " | ".join([message, nonce])
-        else:
-            prev_nonce = self.clients[conn]['received_nonces'][-1]
-            nonce = self.generate_nonce(conn)
-            message_data = " | ".join([message, prev_nonce, nonce])
-
-        print(f'[SENDING PRE-CIPHER] {message_data}')
-
-        cipher = self.encrypt_message(message_data=message_data, conn=conn)
-        print(f'[SENDING POST-CIPHER] {cipher}')
-        hmac = self.generate_hmac(message=cipher.decode(), conn=conn).encode()
-
-        conn.send(cipher)
-        time.sleep(1.5)
-        conn.send(hmac)
-
-    # MARK: Receive Message
-    def receive_message(self, conn):
-
-        msg_bytes = conn.recv(4096)
-
-        if (msg_bytes):
-            print('[INCOMING MESSAGE]..........................................')
-            hmac_received = conn.recv(4096).decode()
-            message_bytes = self.clients[conn]['written_key'].decrypt(
-                msg_bytes)
-            message_data = message_bytes.decode()
-            print(f'[RECEIVED MESSAGE: receive_message] {message_data}')
-
-            if (self.verify_hmac(hmac_received=hmac_received, message=msg_bytes.decode(), conn=conn)):
-                print(f'[VERIFIED] Message received has valid MAC')
-            else:
-                print(f'[NOT VERIFIED] Message received does not have valid MAC')
-            if (message_data.split(" | ")[-1] not in self.clients[conn]['received_nonces']):
-                self.clients[conn]['received_nonces'].append(
-                    message_data.split()[-1])
-                print(f'[NONCE] Fresh')
-            # else:
-                # return
-
-            action = message_data[0]
-            nonce = message_data.split(" | ")[-1]
-            match action:
-                case "l":
-                    print("[LOGIN ATTEMPT]..............................")
-                    act, user, pword, *nonces = message_data.split(" | ")
-                    success = ""
-                    if self.handle_login(username=user, password=pword, conn=conn):
-                        success = "Successful"
-                    else:
-                        success = "unsuccessful"
-
-                    tmp = " | ".join(["[LOGIN]", success])
-                    self.send_message(tmp, conn)
-                case "r":
-                    print("[REGISTRATION ATTEMPT]..............................")
-                    act, user, pword, *nonces = message_data.split(" | ")
-
-                    self.handle_register(
-                        username=user, password=pword, conn=conn)
-                case "d":
-                    print("[DEPOSIT ATTEMPT]..............................")
-                    print(message_data)
-                    act, dollars, *nonce = message_data.split(" | ")
-                    dollars = float(dollars)
-                    self.handle_deposit(dollars, conn)
-
-                case "w":
-                    print("[WITHDRAWAL ATTEMPT]..............................")
-                    act, dollars, *nonce = message_data.split(" | ")
-                    print(message_data)
-                    dollars = float(dollars)
-                    self.handle_withdrawal(dollars, conn)
-
-                case "b":
-                    print("[BALANCE CHECK]..............................")
-                    self.handle_check_balance(conn)
-
-            message, *nonces = message_data.split(" | ")
-            time.sleep(1.5)
-
-            return message, nonces
-
-        else:
-            time.sleep(0.05)
-
-    # MARK: Handle Login
-    def handle_login(self, username: str, password: str, conn: socket):
-
-        tmp = f'{username} attempted login '
-        logger.log(tmp)
-
-        with open('users.json', 'r') as f:
-            data = json.load(f)
-
-            if username in data and data[username]['password'] == password:
-                tmp = f'{username} login successful'
-                logger.log(tmp)
-                self.clients[conn]['username'] = username
-                self.clients[conn]['is_login'] = True
-
-                return True
-
-        tmp = f'{username} login failed'
-        logger.log(tmp)
-        return False
-
-    # MARK: Handle Register
-    def handle_register(self, username: str, password: str, conn: socket):
-
-        with open('users.json', 'r') as f:
-            data = json.load(f)
-
-            if username not in data.keys():
-
-                data[username] = {
-                    'password': password,
-                    'balance': 0
-                }
-                with open('users.json', 'w') as j:
-                    logger.log(f'{username} registration successful')
-                    json.dump(data, j)
-                    self.clients[conn]['username'] = username
-                    self.clients[conn]['is_login'] = True
-                    self.send_message(
-                        f'[REGISTRATION] | Successful', conn)
-            else:
-                logger.log(f'{username} registration unsuccesful')
-                self.send_message(
-                    f'[REGISTRATION] | Unsuccessful', conn)
-
-    # MARK: Handle Deposit
-    def handle_deposit(self, deposit: float, conn: socket):
-
-        if (self.clients[conn]['is_login']):
-            with open('users.json', 'r') as f:
-                data = json.load(f)
-                username = self.clients[conn]['username']
-                data[username]['balance'] += deposit
-
-                with open('users.json', 'w') as j:
-                    json.dump(data, j)
-
-                logger.log(f'{username} deposit: {deposit} successful')
-                self.send_message(f"[DEPOSIT] | Successful", conn)
-        else:
-            logger.log(f'{username} deposit failure')
-            self.send_message(f"[DEPOSIT] | Unsuccessful", conn)
-
-    # MARK: Handle Withdrawal
-    def handle_withdrawal(self, withdrawal: float, conn: socket):
-
-        if (self.clients[conn]['is_login']):
-            with open('users.json', 'r') as f:
-                data = json.load(f)
-
-                username = self.clients[conn]['username']
-
-                if (data[username]['balance'] - withdrawal >= 0):
-                    data[username]['balance'] -= withdrawal
-
-                    with open('users.json', 'w') as j:
-                        json.dump(data, j)
-
-                    self.send_message(
-                        f"[WITHDRAWAL] | Successful", conn)
-                    logger.log(f'{username} withdrawal: {
-                               withdrawal} successful')
-                else:
-                    logger.log(f'{username} withdrawal failure')
-                    self.send_message(
-                        f"[WITHDRAWAL] | Unsuccessful: Insufficient funds, brokie", conn)
-        else:
-            self.send_message("[DEPOSIT] Unsuccessful", conn)
-
-    # MARK: Handle Balance
-    def handle_check_balance(self, conn: socket):
-
-        if (self.clients[conn]['is_login']):
-            with open('users.json', 'r') as f:
-                data = json.load(f)
-
-                username = self.clients[conn]['username']
-
-                balance = data[username]['balance']
-                self.send_message(f"[BALANCE] {balance}", conn)
-
-        else:
-            self.send_message(f"[BALANCE] | Unsuccessful")
-
-        logger.log(f'{username} check balance')
-
-    # MARK: Handle First Message
-    def handle_first_message(self, data: bytes, conn: socket):
-
-        og_key = b'shared_password'
-
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=og_key,
-            iterations=100,
-            backend=default_backend()
-        )
-
-        fernet_seed = base64.urlsafe_b64encode(
-            kdf.derive(og_key))
-
-        tmp_key = Fernet(fernet_seed)
-        message_bytes = tmp_key.decrypt(data)
-        message = message_bytes.decode()
-        print(f'[FIRST] MESSAGE: {message}')
-        hmac_bytes = conn.recv(4096)
-        hmac = hmac_bytes.decode()
-
-        cipher_text = tmp_key.encrypt(message_bytes)
-
-        hash_obj = hashlib.sha256(cipher_text)
-        hex_dig = hash_obj.hexdigest()
-        if (hex_dig == hmac):
-            print('[FIRST MESSAGE] HMAC VERIFIED')
-
-        self.derive_keys(data, conn)
-
-        """
-        message = rsa.decrypt(data, self.priv_key)
-        time.sleep(1.5)
-        print(f'[RECEIVED MESSAGE] salt: {message.decode()}')
-        data = conn.recv(1024)
-        try:
-            rsa.verify(message, data, self.alice_key)
-            print('[VERIFCATION] message is verified')
-        except:
-            print('[VERICATION] message is not verified')
-        """
-
-        self.derive_keys(message_bytes, conn)
-        self.send_message("Done", conn, first=True)
-
-    def generate_nonce(self, conn):
-
-        pin = "".join(str(randint(0, 9)) for _ in range(6))
-        self.clients[conn]['nonces'].append(pin)
-        return pin
-
-    def handle_client(self, conn, addr):
-        """
-        Function used to handle a client, each client is handled in its own thread 
-
-        Params: 
-            - conn 
-                - Socket that connects the server and the client 
-            - addr 
-                - Address of the client 
-        """
-
-        print(f'[NEW CONNECTION] from {addr}')
-        try:
-            self.clients[conn] = {
-                'nonces': [],
-                'received_nonces': []
-            }
-
-            data = conn.recv(1024)
-
-            if data:
-                self.handle_first_message(data, conn)
-
-            while True:
-                self.receive_message(conn)
-
-        except ConnectionResetError:
-            print(f'Client: {addr} has closed connection')
-            conn.close()
-
-    def start_server(self):
+    # MARK: START SERVER
+    def start_server(self) -> None:
         """
         Function to start a server, creates a new thread for every new connection 
         """
@@ -450,6 +45,301 @@ class ATM_Server:
         self.running = False
         self.server.close()
         thread.join()
+
+    # MARK: HANDLE CLIENT
+    def handle_client(self, conn: socket.socket, addr: any) -> None:
+        """
+        Function used to handle a client
+
+        Params: 
+            - conn: socket 
+                - socket that connects server to client 
+            - addr
+                - address of the client
+
+        Returns: 
+            - None
+        """
+        print('[FUNCTION CALL] HANDLE CLIENT')
+        print(f'[NEW CONNECTION] from {addr}')
+
+        self.clients[conn] = {
+            'sent_nonces': [],
+            'received_nonces': []
+        }
+
+        self.handle_first_message(conn)
+
+        try:
+            while True:
+
+                cipher_text = conn.recv(4096)
+
+                if cipher_text:
+                    exit = self.handle_receive_message(cipher_text, conn)
+                else:
+                    time.sleep(1.5)
+
+                if exit:
+                    break
+
+        except Exception as e:
+            print(f'[ERROR] Client: {
+                addr} has closed connection or an error occurred: {e}')
+            traceback.print_exc()
+        finally:
+            conn.close()
+            del self.clients[conn]  # Clean up client list
+            print(f'[CONNECTION CLOSED] with {addr}')
+
+    # MARK: HANDLE RECEIVE MESSAGE
+    def handle_receive_message(self, cipher_text: bytes, conn: socket.socket) -> bool:
+        """
+        Function used to handle messages. The function gets called in the handle client function, after receiving the cipher text. 
+        In here we check the socket for the hmac received. We decipher the text received and verify the HMAC and then call the 
+        handle_atm_func method in order to serve the customer. 
+
+        Params: 
+            - cipher_text: str
+
+        """
+        print('[INCOMING MESSAGE]..........................................')
+        hmac_received = conn.recv(4096)
+        message_bytes = self.clients[conn]['written_key'].decrypt(cipher_text)
+        message_str = message_bytes.decode()
+        print(f'[RECEIVED MESSAGE] {message_str}')
+
+        message_arr = message_str.split(" | ")
+
+        secret_key = self.clients[conn]['secret_key']
+        if verify_hmac(hmac_received, message_bytes, secret_key):
+            print('[HMAC VERIFICATION] Message is VALID')
+        else:
+            print('[HMAC VERIFICATION] Message is NOT VALID')
+            return True
+
+        if (message_arr[-1] not in self.clients[conn]['received_nonces']):
+            self.clients[conn]['received_nonces'].append(message_arr[-1])
+            print(f'[NONCE] Fresh')
+
+        exit = self.handle_atm_functions(message_arr, conn)
+
+        return exit
+
+    # MARK: HANDLE SEND MESSAGE
+    def handle_send_message(self, message: str, conn: socket.socket, first=False) -> None:
+
+        if first:
+            new_nonce = self.generate_nonce(conn)
+            string = " | ".join([message, new_nonce])
+        else:
+            prev_nonce = self.clients[conn]['received_nonces'][-1]
+            new_nonce = self.generate_nonce(conn)
+            string = " | ".join([message, prev_nonce, new_nonce])
+
+        cipher_text = self.clients[conn]['written_key'].encrypt(
+            string.encode())
+        secret_key = self.clients[conn]['secret_key']
+
+        hmac = generate_hmac(message=string, key=secret_key)
+
+        conn.send(cipher_text)
+        time.sleep(1.5)
+        conn.send(hmac)
+
+    # MARK: GENERATE NONCE
+
+    def generate_nonce(self, conn):
+
+        pin = "".join(str(randint(0, 9)) for _ in range(6))
+        self.clients[conn]['sent_nonces'].append(pin)
+        return pin
+
+    # MARK: HANDLE ATM FUNCTIONS
+    def handle_atm_functions(self, message_arr: list[str], conn: socket.socket):
+        """
+        Dispatching function that calls on other functions to handle ATM requests
+        """
+
+        action = message_arr[0]
+
+        match action:
+            case "l":
+                print("[LOGIN ATTEMPT]..............................")
+                act, user, pword, *nonces = message_arr
+                self.handle_login(user, pword, conn)
+            case "r":
+                print("[REGISTRATION ATTEMPT]..............................")
+                act, user, pword, *nonces = message_arr
+
+                self.handle_register(
+                    username=user, password=pword, conn=conn)
+            case "d":
+                print("[DEPOSIT ATTEMPT]..............................")
+                act, dollars, *nonce = message_arr
+                dollars = float(dollars)
+                self.handle_deposit(dollars, conn)
+
+            case "w":
+                print("[WITHDRAWAL ATTEMPT]..............................")
+                act, dollars, *nonce = message_arr
+                dollars = float(dollars)
+                self.handle_withdrawal(dollars, conn)
+
+            case "b":
+                print("[BALANCE CHECK]..............................")
+                self.handle_check_balance(conn)
+
+            case "e":
+                return True
+
+        return False
+
+    # MARK: HANDLE LOGIN
+    def handle_login(self, username: str, password: str, conn: socket):
+
+        tmp = f'{username} attempted login '
+        logger.log(tmp)
+
+        with open('users.json', 'r') as f:
+            data = json.load(f)
+
+            if username in data and data[username]['password'] == password:
+                self.clients[conn]['username'] = username
+                self.clients[conn]['is_login'] = True
+                s = "Successful"
+            else:
+                s = "Unsuccessful"
+
+        tmp = f'{username} Login {s}'
+        logger.log(tmp)
+        self.handle_send_message(" | ".join(["[LOGIN]", s]), conn)
+
+    # MARK: HANDLE REGISTER
+    def handle_register(self, username: str, password: str, conn: socket):
+
+        with open('users.json', 'r') as f:
+            data = json.load(f)
+
+            if username not in data.keys():
+
+                data[username] = {
+                    'password': password,
+                    'balance': 0
+                }
+                with open('users.json', 'w') as j:
+                    logger.log(f'{username} registration successful')
+                    json.dump(data, j)
+                    self.clients[conn]['username'] = username
+                    self.clients[conn]['is_login'] = True
+                    self.handle_send_message(
+                        f'[REGISTRATION] | Successful', conn)
+            else:
+                logger.log(f'{username} registration unsuccesful')
+                self.handle_send_message(
+                    f'[REGISTRATION] | Unsuccessful', conn)
+
+    # MARK: HANDLE DEPOSIT
+    def handle_deposit(self, deposit: float, conn: socket):
+
+        if (self.clients[conn]['is_login']):
+            with open('users.json', 'r') as f:
+                data = json.load(f)
+                username = self.clients[conn]['username']
+                data[username]['balance'] += deposit
+
+                with open('users.json', 'w') as j:
+                    json.dump(data, j)
+
+                logger.log(f'{username} deposit: {deposit} successful')
+                self.handle_send_message(f"[DEPOSIT] | Successful", conn)
+        else:
+            logger.log(f'{username} deposit failure')
+            self.handle_send_message(f"[DEPOSIT] | Unsuccessful", conn)
+
+    # MARK: HANDLE WITHDRAWAL
+    def handle_withdrawal(self, withdrawal: float, conn: socket):
+
+        if (self.clients[conn]['is_login']):
+            with open('users.json', 'r') as f:
+                data = json.load(f)
+
+                username = self.clients[conn]['username']
+
+                if (data[username]['balance'] - withdrawal >= 0):
+                    data[username]['balance'] -= withdrawal
+
+                    with open('users.json', 'w') as j:
+                        json.dump(data, j)
+
+                    self.handle_send_message(
+                        f"[WITHDRAWAL] | Successful", conn)
+                    logger.log(f'{username} withdrawal: {
+                               withdrawal} successful')
+                else:
+                    logger.log(f'{username} withdrawal failure')
+                    self.handle_send_message(
+                        f"[WITHDRAWAL] | Unsuccessful: Insufficient funds, brokie", conn)
+        else:
+            self.handle_send_message("[DEPOSIT] Unsuccessful", conn)
+
+    # MARK: HANDLE BALANCE
+    def handle_check_balance(self, conn: socket):
+
+        if (self.clients[conn]['is_login']):
+            with open('users.json', 'r') as f:
+                data = json.load(f)
+
+                username = self.clients[conn]['username']
+
+                balance = data[username]['balance']
+                self.handle_send_message(f"[BALANCE] {balance}", conn)
+
+        else:
+            self.handle_send_message(f"[BALANCE] | Unsuccessful")
+
+        logger.log(f'{username} check balance')
+
+    # MARK: HANDLE FIRST MESSAGE
+    def handle_first_message(self, conn: socket):
+        """
+        Function is used to handle the first message with a client to generate/derive new keys 
+
+        Params: 
+            - conn: socket 
+                - this is the socket that serves a client 
+
+        Returns: 
+            - None 
+        """
+
+        print('[FUNCTION CALL] HANDLE FIRST MESSAGE')
+        shared_key = 'sharedkey'.encode()
+        prev_key = generate_key(passphrase=shared_key, salt=shared_key)
+        shared_key = Fernet(prev_key)
+
+        cipher_text = conn.recv(4096)
+        time.sleep(1.5)
+        hmac_received = conn.recv(4096)
+        seed = shared_key.decrypt(cipher_text)
+
+        print(f'[VERIFYING HMAC] {verify_hmac(
+            hmac_received, seed, prev_key)}')
+        print(f'[MESSAGE RECEIVED] {seed.decode()}')
+
+        rev_seed = seed[::-1]
+        secret_key = generate_key(passphrase=seed, salt=seed)
+        written_key = generate_key(passphrase=rev_seed, salt=rev_seed)
+        self.clients[conn]['secret_key'] = secret_key
+        self.clients[conn]['written_key'] = Fernet(written_key)
+
+        print(f'[DERIVED KEYS] KEYS HAVE BEEN CREATED')
+
+        self.handle_send_message("DONE", conn, first=True)
+        time.sleep(0.5)
+
+        cipher_text = conn.recv(4096)
+        self.handle_receive_message(cipher_text, conn)
 
 
 server = ATM_Server()
