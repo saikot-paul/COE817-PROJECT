@@ -12,4 +12,5 @@ Here's your revised document with improved formatting and indentation:
     - generates: encryption key, HMAC key 
 5. Any message is now encrypted with the encryption key and a subsequent HMAC is created with the HMAC key
 
-![image](https://github.com/saikot-paul/COE817-PROJECT/assets/79386282/c844081c-cc98-41fd-a06a-f02831ef5ac9)
+![image](https://github.com/saikot-paul/COE817-PROJECT/assets/79386282/0bf7d45c-698a-40d3-8d51-6ab9e13e31b9)
+
