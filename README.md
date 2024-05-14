@@ -1,7 +1,3 @@
-Here's your revised document with improved formatting and indentation:
-
----
-
 # COE817 - BANKING PROJECT 
 
 ## Protocol 
